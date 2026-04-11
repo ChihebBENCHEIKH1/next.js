@@ -255,7 +255,10 @@ if (
 }
 
 let initialServerResponse: Promise<InitialRSCPayload>
+<<<<<<< HEAD
 let initialOutputExportFallbackBasePath: string | null = null
+=======
+>>>>>>> cf0395a101 (Dedupe output export fallback client fetches)
 const decodeFallbackPrerenderPayload = async (
   responsePromise: Promise<Response>,
   renderedUrl?: URL
