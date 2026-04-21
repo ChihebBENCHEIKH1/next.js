@@ -1,5 +1,6 @@
 # build output
 dist
+apps/docs/.source/
 !.github/actions/*/dist
 .next
 .next-profiles
