@@ -62,7 +62,7 @@ use turbo_tasks_fs::{
 use turbo_unix_path::{get_relative_path_to, sys_to_unix, unix_to_sys};
 use turbopack_core::{
     PROJECT_FILESYSTEM_NAME, SOURCE_URL_PROTOCOL,
-    diagnostics::PlainDiagnostic,
+    diagnostics::PlainBuildFeatureUsage,
     issue::{IssueFilter, PlainIssue},
     output::{OutputAsset, OutputAssets},
     source_map::{SourceMap, Token},
@@ -86,8 +86,8 @@ use crate::{
             NextTurbopackContext, create_turbo_tasks,
         },
         utils::{
-            DetachedVc, NapiDiagnostic, NapiIssue, RootTask, TurbopackResult, get_diagnostics,
-            get_issues, strongly_consistent_catch_collectables, subscribe,
+            DetachedVc, NapiBuildFeatureUsage, NapiIssue, RootTask, TurbopackResult,
+            get_diagnostics, get_issues, strongly_consistent_catch_collectables, subscribe,
         },
     },
     util::DhatProfilerGuard,
@@ -969,7 +969,7 @@ impl NapiEntrypoints {
 struct EntrypointsWithIssues {
     entrypoints: Option<ReadRef<EntrypointsOperation>>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -1003,7 +1003,7 @@ fn project_container_entrypoints_operation(
 #[turbo_tasks::value(serialization = "none")]
 struct OperationResult {
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -1011,7 +1011,7 @@ struct OperationResult {
 struct AllWrittenEntrypointsWithIssues {
     entrypoints: Option<ReadRef<EntrypointsOperation>>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -1536,7 +1536,10 @@ pub async fn project_write_all_entrypoints_to_disk(
             None
         },
         issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
-        diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+        diagnostics: diags
+            .iter()
+            .map(|d| NapiBuildFeatureUsage::from(d))
+            .collect(),
     })
 }
 
@@ -1746,7 +1749,10 @@ pub async fn project_entrypoints(
     Ok(TurbopackResult {
         result,
         issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
-        diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+        diagnostics: diags
+            .iter()
+            .map(|d| NapiBuildFeatureUsage::from(d))
+            .collect(),
     })
 }
 
@@ -1794,7 +1800,10 @@ pub fn project_entrypoints_subscribe(
                     .iter()
                     .map(|issue| NapiIssue::from(&**issue))
                     .collect(),
-                diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+                diagnostics: diags
+                    .iter()
+                    .map(|d| NapiBuildFeatureUsage::from(d))
+                    .collect(),
             }])
         },
     )
@@ -1804,7 +1813,7 @@ pub fn project_entrypoints_subscribe(
 struct HmrUpdateWithIssues {
     update: ReadRef<Update>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -1934,7 +1943,10 @@ pub fn project_hmr_events(
             Ok(vec![TurbopackResult {
                 result: ctx.env.to_js_value(&update)?,
                 issues: napi_issues,
-                diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+                diagnostics: diags
+                    .iter()
+                    .map(|d| NapiBuildFeatureUsage::from(d))
+                    .collect(),
             }])
         },
     )
@@ -1949,7 +1961,7 @@ struct HmrChunkNames {
 struct HmrChunkNamesWithIssues {
     chunk_names: ReadRef<Vec<RcStr>>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -2024,7 +2036,7 @@ pub fn project_hmr_chunk_names_subscribe(
                     .collect(),
                 diagnostics: diagnostics
                     .iter()
-                    .map(|d| NapiDiagnostic::from(d))
+                    .map(|d| NapiBuildFeatureUsage::from(d))
                     .collect(),
             }])
         },
@@ -2499,7 +2511,7 @@ pub async fn project_write_analyze_data(
         issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
         diagnostics: diagnostics
             .iter()
-            .map(|d| NapiDiagnostic::from(d))
+            .map(|d| NapiBuildFeatureUsage::from(d))
             .collect(),
     })
 }
@@ -2563,7 +2575,7 @@ pub async fn project_get_all_compilation_issues(
         issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
         diagnostics: diagnostics
             .iter()
-            .map(|d| NapiDiagnostic::from(d))
+            .map(|d| NapiBuildFeatureUsage::from(d))
             .collect(),
     })
 }

@@ -4,75 +4,51 @@ use anyhow::Result;
 use async_trait::async_trait;
 use auto_hash_map::AutoSet;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{CollectiblesSource, FxIndexMap, ResolvedVc, Upcast, Vc, emit};
+use turbo_tasks::{CollectiblesSource, ResolvedVc, Upcast, Vc, emit};
 
-#[turbo_tasks::value(serialization = "none")]
-#[derive(Clone, Debug)]
-pub struct PlainDiagnostic {
-    pub category: RcStr,
-    pub name: RcStr,
-    pub payload: FxIndexMap<RcStr, RcStr>,
-}
-
-impl Ord for PlainDiagnostic {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name
-            .cmp(&other.name)
-            .then_with(|| self.category.cmp(&other.category))
-            .then_with(|| self.payload.len().cmp(&other.payload.len()))
-            .then_with(|| {
-                for ((a_key, a_value), (b_key, b_value)) in
-                    self.payload.iter().zip(other.payload.iter())
-                {
-                    match a_key.cmp(b_key) {
-                        Ordering::Equal => {}
-                        other => return other,
-                    }
-                    match a_value.cmp(b_value) {
-                        Ordering::Equal => {}
-                        other => return other,
-                    }
-                }
-                Ordering::Equal
-            })
-    }
-}
-
-impl PartialOrd for PlainDiagnostic {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[turbo_tasks::value(transparent)]
-pub struct DiagnosticPayload(
-    #[bincode(with = "turbo_bincode::indexmap")] pub FxIndexMap<RcStr, RcStr>,
-);
-
-/// An arbitrary payload can be used to analyze, diagnose Turbopack's behavior.
+/// A diagnostic signal surfaced from Turbopack to the host (typically Next.js).
+///
+/// Today the only shape we carry is a build-feature-usage telemetry record.
+/// Diagnostics are emitted via [`DiagnosticExt::emit`] and collected as
+/// turbo-tasks collectibles. Consumers call [`DiagnosticContextExt::peek_diagnostics`]
+/// on the operation source and read back a set of [`ResolvedVc<Box<dyn Diagnostic>>`].
+/// Since collectibles must be trait objects, `Diagnostic` is a trait — but it
+/// only has one method so implementors materialize their state in a single task
+/// call.
+///
+/// If we ever grow a second diagnostic shape, promote [`PlainBuildFeatureUsage`]
+/// into a tagged enum and update the NAPI layer accordingly.
 #[turbo_tasks::value_trait]
 pub trait Diagnostic {
-    /// **NOTE:** Pseudo-reserved; this is not being used currently. The `type` of the diagnostics
-    /// that can be used selectively filtered by consumers. For example, this could be `telemetry`,
-    /// or `slow_perf_event`, or something else. This is not strongly typed though; since consumer
-    /// or implementation may need to define own category.
+    /// Convert the diagnostic into its plain, NAPI-boundary-ready form.
     #[turbo_tasks::function]
-    fn category(&self) -> Vc<RcStr>;
-    /// Name of the specific diagnostic event.
-    #[turbo_tasks::function]
-    fn name(&self) -> Vc<RcStr>;
-    /// Arbitrary payload included in the diagnostic event.
-    #[turbo_tasks::function]
-    fn payload(&self) -> Vc<DiagnosticPayload>;
+    fn into_plain(self: Vc<Self>) -> Vc<PlainBuildFeatureUsage>;
+}
 
-    #[turbo_tasks::function]
-    async fn into_plain(self: Vc<Self>) -> Result<Vc<PlainDiagnostic>> {
-        Ok(PlainDiagnostic {
-            category: self.category().owned().await?,
-            name: self.name().owned().await?,
-            payload: self.payload().owned().await?,
-        }
-        .cell())
+/// The plain, serializable form of a build-feature-usage diagnostic, matching
+/// the `NEXT_BUILD_FEATURE_USAGE` telemetry event shape.
+///
+/// Counts follow webpack's `TelemetryPlugin` semantics:
+/// - Boolean config flags: `1` if enabled, `0` if disabled.
+/// - Module imports (e.g. `next/image`): aggregated sum of per-resolve emissions.
+#[turbo_tasks::value(shared, serialization = "none")]
+#[derive(Clone, Debug)]
+pub struct PlainBuildFeatureUsage {
+    pub feature_name: RcStr,
+    pub invocation_count: u32,
+}
+
+impl Ord for PlainBuildFeatureUsage {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.feature_name
+            .cmp(&other.feature_name)
+            .then_with(|| self.invocation_count.cmp(&other.invocation_count))
+    }
+}
+
+impl PartialOrd for PlainBuildFeatureUsage {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -110,7 +86,7 @@ where
     }
 }
 
-/// A list of diagnostics captured with [`DiagnosticContextExt::peek_diagnostics`] and
+/// A list of diagnostics captured with [`DiagnosticContextExt::peek_diagnostics`].
 #[derive(Debug)]
 #[turbo_tasks::value]
 pub struct CapturedDiagnostics {

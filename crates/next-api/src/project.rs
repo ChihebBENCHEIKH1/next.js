@@ -24,7 +24,7 @@ use next_core::{
         get_server_chunking_context_with_client_assets, get_server_compile_time_info,
         get_server_module_options_context, get_server_resolve_options_context,
     },
-    next_telemetry::NextFeatureTelemetry,
+    next_telemetry::FeatureUsageTelemetry,
     parse_segment_config_from_source,
     segment_config::ParseSegmentMode,
     util::{NextRuntime, OptionEnvMap},
@@ -1686,16 +1686,19 @@ impl Project {
     /// to detect which feature is enabled.
     #[turbo_tasks::function]
     async fn collect_project_feature_telemetry(self: Vc<Self>) -> Result<()> {
-        let emit_event = |feature_name: &str, enabled: bool| {
-            NextFeatureTelemetry::new(feature_name.into(), enabled)
+        let emit_event = |feature_name: RcStr, enabled: bool| {
+            FeatureUsageTelemetry::from_bool(feature_name, enabled)
                 .resolved_cell()
                 .emit();
         };
 
-        // First, emit an event for the binary target triple.
-        // This is different to webpack-config; when this is being called,
-        // it is always using SWC so we don't check swc here.
-        emit_event(env!("VERGEN_CARGO_TARGET_TRIPLE"), true);
+        // First, emit an event for the binary target triple. Prefixed with
+        // `swc/target/` so the name matches the webpack side's
+        // `swc/target/${SWC_TARGET_TRIPLE}` variant in `EventBuildFeatureUsage`.
+        emit_event(
+            format!("swc/target/{}", env!("VERGEN_CARGO_TARGET_TRIPLE")).into(),
+            true,
+        );
 
         // Go over config and report enabled features.
         // [TODO]: useSwcLoader is not being reported as it is not directly corresponds (it checks babel config existence)
@@ -1703,28 +1706,23 @@ impl Project {
         let config = self.next_config();
 
         emit_event(
-            "skipProxyUrlNormalize",
+            rcstr!("skipProxyUrlNormalize"),
             *config.skip_proxy_url_normalize().await?,
         );
 
         emit_event(
-            "skipTrailingSlashRedirect",
+            rcstr!("skipTrailingSlashRedirect"),
             *config.skip_trailing_slash_redirect().await?,
-        );
-        emit_event(
-            "persistentCaching",
-            *self.is_persistent_caching_enabled().await?,
         );
 
         emit_event(
-            "modularizeImports",
+            rcstr!("modularizeImports"),
             !config.modularize_imports().await?.is_empty(),
         );
         emit_event(
-            "transpilePackages",
+            rcstr!("transpilePackages"),
             !config.transpile_packages().await?.is_empty(),
         );
-        emit_event("turbotrace", false);
 
         // compiler options
         let compiler_options = config.compiler().await?;
@@ -1750,11 +1748,14 @@ impl Project {
             .map(|e| e.is_enabled())
             .unwrap_or_default();
 
-        emit_event("swcRelay", swc_relay_enabled);
-        emit_event("swcStyledComponents", styled_components_enabled);
-        emit_event("swcReactRemoveProperties", react_remove_properties_enabled);
-        emit_event("swcRemoveConsole", remove_console_enabled);
-        emit_event("swcEmotion", emotion_enabled);
+        emit_event(rcstr!("swcRelay"), swc_relay_enabled);
+        emit_event(rcstr!("swcStyledComponents"), styled_components_enabled);
+        emit_event(
+            rcstr!("swcReactRemoveProperties"),
+            react_remove_properties_enabled,
+        );
+        emit_event(rcstr!("swcRemoveConsole"), remove_console_enabled);
+        emit_event(rcstr!("swcEmotion"), emotion_enabled);
 
         Ok(())
     }

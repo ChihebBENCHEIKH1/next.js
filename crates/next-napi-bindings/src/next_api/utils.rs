@@ -9,17 +9,19 @@ use napi::{
 };
 use napi_derive::napi;
 use next_code_frame::{CodeFrameLocation, CodeFrameOptions, Location, render_code_frame};
+use next_core::next_telemetry::FeatureUsageTelemetry;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use turbo_rcstr::RcStr;
 use turbo_tasks::{
-    Effects, OperationVc, ReadRef, TaskId, TryJoinIterExt, Vc, VcValueType, take_effects,
+    Effects, FxIndexMap, OperationVc, ReadRef, TaskId, TryJoinIterExt, Vc, VcValueType,
+    take_effects,
 };
 use turbo_tasks_fs::FileContent;
 use turbopack_core::{
-    diagnostics::{Diagnostic, DiagnosticContextExt, PlainDiagnostic},
+    diagnostics::{Diagnostic, DiagnosticContextExt, PlainBuildFeatureUsage},
     issue::{
         CollectibleIssuesExt, IssueFilter, IssueSeverity, PlainIssue, PlainIssueSource,
         PlainSource, StyledString,
@@ -99,7 +101,7 @@ pub fn root_task_dispose(
     Ok(())
 }
 
-/// [Peeks] at the [`Issue`] held by the given source and returns it as a [`PlainDiagnostic`].
+/// [Peeks] at the [`Issue`]s held by the given source and returns them as [`PlainIssue`]s.
 /// It does not [consume] any [`Issue`]s held by the source.
 ///
 /// [Peeks]: turbo_tasks::CollectiblesSource::peek_collectibles
@@ -114,25 +116,52 @@ pub async fn get_issues<T: Send>(
     ))
 }
 
-/// [Peeks] at the [`Diagnostic`]s held by the given source and returns it as a [`PlainDiagnostic`].
-/// It does not [consume] any [`Diagnostic`]s held by the source.
+/// [Peeks] at the [`Diagnostic`]s held by the given source and returns them as
+/// [`PlainBuildFeatureUsage`]s, aggregated by `feature_name`.
+///
+/// The Rust side may emit many diagnostics per build (one per `before_resolve`
+/// call for a feature module, plus one per config flag). This function sums
+/// their `invocation_count` by `feature_name` so JS sees at most one record
+/// per feature — matching webpack's `TelemetryPlugin` emission shape.
 ///
 /// [Peeks]: turbo_tasks::CollectiblesSource::peek_collectibles
-/// [consume]: turbo_tasks::CollectiblesSource::take_collectibles
 pub async fn get_diagnostics<T: Send>(
     source: OperationVc<T>,
-) -> Result<Arc<Vec<ReadRef<PlainDiagnostic>>>> {
+) -> Result<Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>> {
     let captured_diags = source.peek_diagnostics().await?;
-    let mut diags = captured_diags
+    let diags = captured_diags
         .diagnostics
         .iter()
         .map(|d| d.into_plain())
         .try_join()
         .await?;
 
-    diags.sort();
+    let mut by_feature: FxIndexMap<RcStr, u32> = FxIndexMap::default();
+    for d in &diags {
+        *by_feature.entry(d.feature_name.clone()).or_insert(0) += d.invocation_count;
+    }
 
-    Ok(Arc::new(diags))
+    // Re-materialize one aggregated diagnostic per feature by constructing a
+    // fresh `FeatureUsageTelemetry` cell and reading it back. This avoids
+    // needing to construct a `ReadRef` from an owned value, which is not a
+    // public operation.
+    let aggregated_cells: Vec<Vc<PlainBuildFeatureUsage>> = by_feature
+        .into_iter()
+        .map(|(feature_name, invocation_count)| {
+            let vc: Vc<FeatureUsageTelemetry> =
+                FeatureUsageTelemetry::new(feature_name, invocation_count).cell();
+            Vc::upcast::<Box<dyn Diagnostic>>(vc).into_plain()
+        })
+        .collect();
+    let mut aggregated: Vec<ReadRef<PlainBuildFeatureUsage>> = aggregated_cells
+        .into_iter()
+        .map(|vc| async move { vc.await })
+        .try_join()
+        .await?;
+
+    aggregated.sort();
+
+    Ok(Arc::new(aggregated))
 }
 
 /// Returns true if the file path refers to a Next.js/React internal file whose
@@ -383,23 +412,16 @@ impl From<SourcePos> for NapiSourcePos {
 }
 
 #[napi(object)]
-pub struct NapiDiagnostic {
-    pub category: RcStr,
-    pub name: RcStr,
-    #[napi(ts_type = "Record<string, string>")]
-    pub payload: FxHashMap<RcStr, RcStr>,
+pub struct NapiBuildFeatureUsage {
+    pub feature_name: RcStr,
+    pub invocation_count: u32,
 }
 
-impl NapiDiagnostic {
-    pub fn from(diagnostic: &PlainDiagnostic) -> Self {
+impl NapiBuildFeatureUsage {
+    pub fn from(diagnostic: &PlainBuildFeatureUsage) -> Self {
         Self {
-            category: diagnostic.category.clone(),
-            name: diagnostic.name.clone(),
-            payload: diagnostic
-                .payload
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            feature_name: diagnostic.feature_name.clone(),
+            invocation_count: diagnostic.invocation_count,
         }
     }
 }
@@ -407,7 +429,7 @@ impl NapiDiagnostic {
 pub struct TurbopackResult<T: ToNapiValue> {
     pub result: T,
     pub issues: Vec<NapiIssue>,
-    pub diagnostics: Vec<NapiDiagnostic>,
+    pub diagnostics: Vec<NapiBuildFeatureUsage>,
 }
 
 impl<T: ToNapiValue> ToNapiValue for TurbopackResult<T> {
@@ -480,7 +502,7 @@ pub async fn strongly_consistent_catch_collectables<R: VcValueType + Send>(
 ) -> Result<(
     Option<ReadRef<R>>,
     Arc<Vec<ReadRef<PlainIssue>>>,
-    Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     Arc<Effects>,
 )> {
     let result = source_op.read_strongly_consistent().await;

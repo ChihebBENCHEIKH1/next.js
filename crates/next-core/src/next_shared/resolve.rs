@@ -25,7 +25,7 @@ use turbopack_core::{
     },
 };
 
-use crate::{next_server::ServerContextType, next_telemetry::ModuleFeatureTelemetry};
+use crate::{next_server::ServerContextType, next_telemetry::FeatureUsageTelemetry};
 
 // Set of the features we want to track, following existing references in
 // webpack/plugins/telemetry-plugin.
@@ -287,8 +287,8 @@ impl BeforeResolvePlugin for ModuleFeatureReportResolvePlugin {
                     .find(|sub_path| path.is_match(sub_path));
 
                 if let Some(sub_path) = sub_path {
-                    // This is not accurate. we only emit one diagnostic per request not per import
-                    ModuleFeatureTelemetry::new(format!("{module}{sub_path}").into(), 1)
+                    // TODO: this is not the right place to emit this event
+                    FeatureUsageTelemetry::new(format!("{module}{sub_path}").into(), 1)
                         .resolved_cell()
                         .emit();
                 }

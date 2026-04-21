@@ -561,10 +561,9 @@ export interface NapiSourcePos {
   line: number
   column: number
 }
-export interface NapiDiagnostic {
-  category: RcStr
-  name: RcStr
-  payload: Record<string, string>
+export interface NapiBuildFeatureUsage {
+  featureName: RcStr
+  invocationCount: number
 }
 export declare function expandNextJsTemplate(
   content: Buffer,

@@ -1,86 +1,46 @@
-use turbo_rcstr::{RcStr, rcstr};
-use turbo_tasks::{Vc, fxindexmap};
-use turbopack_core::diagnostics::{Diagnostic, DiagnosticPayload};
+use turbo_rcstr::RcStr;
+use turbo_tasks::Vc;
+use turbopack_core::diagnostics::{Diagnostic, PlainBuildFeatureUsage};
 
-/// A structure that keeps track of whether a particular Next.js feature is
-/// enabled for the telemetry.
+/// Telemetry diagnostic reporting usage of a Next.js feature.
 ///
-/// The original implementation code can be found
-/// [here](https://github.com/vercel/next.js/blob/9da305fe320b89ee2f8c3cfb7ecbf48856368913/packages/next/src/build/webpack-config.ts#L2516).
+/// Emissions are aggregated by `feature_name` in
+/// `crates/next-napi-bindings/src/next_api/utils.rs::get_diagnostics` before
+/// crossing the NAPI boundary, so each feature produces exactly one
+/// telemetry record per build — matching webpack's `TelemetryPlugin` shape.
+///
+/// Counts:
+/// - Boolean config flags: `1` if enabled, `0` if disabled.
+/// - Module imports (e.g. `next/image`): one emission per resolve of the feature module; the
+///   aggregation step sums them.
 #[turbo_tasks::value(shared)]
-pub struct NextFeatureTelemetry {
-    pub event_name: RcStr,
+pub struct FeatureUsageTelemetry {
     pub feature_name: RcStr,
-    pub enabled: bool,
+    pub invocation_count: u32,
 }
 
-impl NextFeatureTelemetry {
-    pub fn new(feature_name: RcStr, enabled: bool) -> Self {
-        NextFeatureTelemetry {
-            event_name: rcstr!("EVENT_BUILD_FEATURE_USAGE"),
-            feature_name,
-            enabled,
-        }
-    }
-}
-
-#[turbo_tasks::value_impl]
-impl Diagnostic for NextFeatureTelemetry {
-    #[turbo_tasks::function]
-    fn category(&self) -> Vc<RcStr> {
-        Vc::cell(rcstr!("NextFeatureTelemetry_category_tbd"))
-    }
-
-    #[turbo_tasks::function]
-    fn name(&self) -> Vc<RcStr> {
-        Vc::cell(self.event_name.clone())
-    }
-
-    #[turbo_tasks::function]
-    fn payload(&self) -> Vc<DiagnosticPayload> {
-        Vc::cell(fxindexmap! {
-            self.feature_name.clone() =>
-            self.enabled.to_string().into(),
-        })
-    }
-}
-
-/// A struct represent telemetry event for the feature usage,
-/// referred as `importing` a certain module. (i.e importing @next/image)
-#[turbo_tasks::value(shared)]
-pub struct ModuleFeatureTelemetry {
-    pub event_name: RcStr,
-    pub feature_name: RcStr,
-    pub invocation_count: usize,
-}
-
-impl ModuleFeatureTelemetry {
-    pub fn new(feature_name: RcStr, invocation_count: usize) -> Self {
-        ModuleFeatureTelemetry {
-            event_name: rcstr!("EVENT_BUILD_FEATURE_USAGE"),
+impl FeatureUsageTelemetry {
+    pub fn new(feature_name: RcStr, invocation_count: u32) -> Self {
+        FeatureUsageTelemetry {
             feature_name,
             invocation_count,
         }
     }
+
+    pub fn from_bool(feature_name: RcStr, enabled: bool) -> Self {
+        FeatureUsageTelemetry::new(feature_name, if enabled { 1 } else { 0 })
+    }
 }
 
 #[turbo_tasks::value_impl]
-impl Diagnostic for ModuleFeatureTelemetry {
+impl Diagnostic for FeatureUsageTelemetry {
     #[turbo_tasks::function]
-    fn category(&self) -> Vc<RcStr> {
-        Vc::cell(rcstr!("ModuleFeatureTelemetry_category_tbd"))
-    }
-
-    #[turbo_tasks::function]
-    fn name(&self) -> Vc<RcStr> {
-        Vc::cell(self.event_name.clone())
-    }
-
-    #[turbo_tasks::function]
-    fn payload(&self) -> Vc<DiagnosticPayload> {
-        Vc::cell(fxindexmap! {
-            self.feature_name.clone() =>
-            self.invocation_count.to_string().into(),
-        })
+    async fn into_plain(self: Vc<Self>) -> anyhow::Result<Vc<PlainBuildFeatureUsage>> {
+        let this = self.await?;
+        Ok(PlainBuildFeatureUsage {
+            feature_name: this.feature_name.clone(),
+            invocation_count: this.invocation_count,
+        }
+        .cell())
     }
 }

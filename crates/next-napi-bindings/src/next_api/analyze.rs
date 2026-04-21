@@ -8,7 +8,7 @@ use next_api::{
 };
 use turbo_tasks::{Effects, ReadRef, ResolvedVc, TryJoinIterExt, Vc};
 use turbopack_core::{
-    diagnostics::PlainDiagnostic,
+    diagnostics::PlainBuildFeatureUsage,
     issue::PlainIssue,
     output::{OutputAsset, OutputAssets},
 };
@@ -18,7 +18,7 @@ use crate::next_api::utils::strongly_consistent_catch_collectables;
 #[turbo_tasks::value(serialization = "none")]
 pub struct WriteAnalyzeResult {
     pub issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    pub diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    pub diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     pub effects: Arc<Effects>,
 }
 

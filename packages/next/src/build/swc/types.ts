@@ -167,15 +167,14 @@ export interface PlainTraceItem {
   layer?: string
 }
 
-export interface Diagnostics {
-  category: string
-  name: string
-  payload: unknown
+export interface BuildFeatureUsage {
+  featureName: string
+  invocationCount: number
 }
 
 export type TurbopackResult<T = {}> = T & {
   issues: Issue[]
-  diagnostics: Diagnostics[]
+  diagnostics: BuildFeatureUsage[]
 }
 
 export interface Middleware {

@@ -16,12 +16,12 @@ use tracing::Instrument;
 use turbo_rcstr::RcStr;
 use turbo_tasks::{Completion, Effects, OperationVc, ReadRef, Vc};
 use turbopack_core::{
-    diagnostics::PlainDiagnostic,
+    diagnostics::PlainBuildFeatureUsage,
     issue::{IssueFilter, PlainIssue},
 };
 
 use crate::next_api::utils::{
-    DetachedVc, NapiDiagnostic, NapiIssue, RootTask, TurbopackResult,
+    DetachedVc, NapiBuildFeatureUsage, NapiIssue, RootTask, TurbopackResult,
     strongly_consistent_catch_collectables, subscribe,
 };
 
@@ -119,7 +119,7 @@ async fn issue_filter_from_endpoint(
 struct WrittenEndpointWithIssues {
     written: Option<ReadRef<EndpointOutputPaths>>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
@@ -170,7 +170,10 @@ pub async fn endpoint_write_to_disk(
     Ok(TurbopackResult {
         result: NapiWrittenEndpoint::from(written.map(ReadRef::into_owned)),
         issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
-        diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+        diagnostics: diags
+            .iter()
+            .map(|d| NapiBuildFeatureUsage::from(d))
+            .collect(),
     })
 }
 
@@ -208,7 +211,7 @@ pub fn endpoint_server_changed_subscribe(
                 issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
                 diagnostics: diagnostics
                     .iter()
-                    .map(|d| NapiDiagnostic::from(d))
+                    .map(|d| NapiBuildFeatureUsage::from(d))
                     .collect(),
             }])
         },
@@ -219,7 +222,7 @@ pub fn endpoint_server_changed_subscribe(
 struct EndpointIssuesAndDiags {
     changed: Option<ReadRef<Completion>>,
     issues: Arc<Vec<ReadRef<PlainIssue>>>,
-    diagnostics: Arc<Vec<ReadRef<PlainDiagnostic>>>,
+    diagnostics: Arc<Vec<ReadRef<PlainBuildFeatureUsage>>>,
     effects: Arc<Effects>,
 }
 
