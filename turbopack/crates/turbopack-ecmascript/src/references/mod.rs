@@ -35,7 +35,6 @@ use constant_value::ConstantValueCodeGen;
 use either::Either;
 use indexmap::map::Entry;
 use num_traits::Zero;
-use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -3876,9 +3875,9 @@ impl From<Vec<AstParentKind>> for AstPath {
     }
 }
 
-pub static TURBOPACK_HELPER: Lazy<Atom> = Lazy::new(|| atom!("__turbopack-helper__"));
-pub static TURBOPACK_HELPER_WTF8: Lazy<Wtf8Atom> =
-    Lazy::new(|| atom!("__turbopack-helper__").into());
+pub static TURBOPACK_HELPER: LazyLock<Atom> = LazyLock::new(|| atom!("__turbopack-helper__"));
+pub static TURBOPACK_HELPER_WTF8: LazyLock<Wtf8Atom> =
+    LazyLock::new(|| atom!("__turbopack-helper__").into());
 
 pub fn is_turbopack_helper_import(import: &ImportDecl) -> bool {
     let annotations = ImportAnnotations::parse(import.with.as_deref());
