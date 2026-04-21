@@ -29,10 +29,10 @@ import { createInitialRSCPayloadFromFallbackPrerender } from './flight-data-help
 import { getDeploymentId } from '../shared/lib/deployment-id'
 import { setNavigationBuildId } from './navigation-build-id'
 import {
-  addOutputExportDataSuffix,
-  fetchOutputExportDataResponse,
+  getConfiguredOutputExportNotFoundCandidate,
   fetchOutputExportFallbackResponse,
-  stripOutputExportDataSuffix,
+  fetchOutputExportNotFoundDataResponse,
+  fetchOutputExportNotFoundResponse,
 } from './output-export-fallback'
 
 /// <reference types="react-dom/experimental" />
@@ -91,7 +91,6 @@ declare global {
   }
 }
 
-const NEXT_EXPORT_ORIGINAL_URL_SESSION_KEY = '__NEXT_EXPORT_ORIGINAL_URL'
 const outputExportResumeUrl =
   typeof window !== 'undefined' && window.__NEXT_EXPORT_ORIGINAL_URL
     ? new URL(window.__NEXT_EXPORT_ORIGINAL_URL, window.location.href)
@@ -251,30 +250,37 @@ if (
 }
 
 let initialServerResponse: Promise<InitialRSCPayload>
-if (instantTestStaticFetch) {
-  const processedStaticFetch = Promise.resolve(instantTestStaticFetch)
+let initialOutputExportFallbackBasePath: string | null = null
+const decodeFallbackPrerenderPayload = async (
+  responsePromise: Promise<Response>,
+  renderedUrl?: URL
+): Promise<InitialRSCPayload> => {
+  const processedResponse = responsePromise
     .then(processFetch)
     .then(({ response }) => response)
-  // Instant Navigation Testing API: hydrate from the static RSC payload
-  // fetch kicked off by an injected <script> tag, instead of the inline
-  // Flight data (which is not present in the static shell).
-  initialServerResponse = Promise.resolve(
-    createFromFetch<InitialRSCPayload>(processedStaticFetch, {
+  const initialRSCPayload = await createFromFetch<InitialRSCPayload>(
+    processedResponse,
+    {
       callServer,
       findSourceMapURL,
       debugChannel,
-      // The static fetch response is a partial stream (static-only Flight
-      // data with no dynamic content). Allow it to close without error so
-      // React treats dynamic holes as still-suspended rather than
-      // triggering error recovery.
       unstable_allowPartialStream: true,
-    })
-  ).then(async (initialRSCPayload) => {
-    return createInitialRSCPayloadFromFallbackPrerender(
-      await processedStaticFetch,
-      initialRSCPayload
-    )
-  })
+    }
+  )
+
+  return createInitialRSCPayloadFromFallbackPrerender(
+    await processedResponse,
+    initialRSCPayload,
+    renderedUrl
+  )
+}
+if (instantTestStaticFetch) {
+  // Instant Navigation Testing API: hydrate from the static RSC payload
+  // fetch kicked off by an injected <script> tag, instead of the inline
+  // Flight data (which is not present in the static shell).
+  initialServerResponse = decodeFallbackPrerenderPayload(
+    Promise.resolve(instantTestStaticFetch)
+  )
 } else if (window.__NEXT_EXPORT_FALLBACK) {
   // This must be checked before __NEXT_CLIENT_RESUME because
   // _fallback.html may be based on a PPR shell that also sets
@@ -290,52 +296,27 @@ if (instantTestStaticFetch) {
     )
 
     if (fallbackResult !== null) {
-      try {
-        sessionStorage.setItem(
-          NEXT_EXPORT_ORIGINAL_URL_SESSION_KEY,
-          renderedUrl.href
-        )
-      } catch {}
-
-      const fallbackDocumentUrl = stripOutputExportDataSuffix(
-        new URL(fallbackResult.response.url)
+      initialOutputExportFallbackBasePath = fallbackResult.fallbackUrl.pathname
+      return decodeFallbackPrerenderPayload(
+        Promise.resolve(fallbackResult.response),
+        renderedUrl
       )
-
-      window.location.replace(fallbackDocumentUrl.href)
-      return await new Promise<InitialRSCPayload>(() => {})
     }
 
     const response =
-      (await fetchOutputExportDataResponse(
-        new URL('/_not-found', renderedUrl),
-        {
-          credentials: 'same-origin',
-        }
-      )) ??
-      (await fetch(
-        addOutputExportDataSuffix(new URL('/_not-found', renderedUrl)),
-        {
-          credentials: 'same-origin',
-        }
-      ))
+      (await fetchOutputExportNotFoundDataResponse(renderedUrl, {
+        credentials: 'same-origin',
+      })) ??
+      (await fetchOutputExportNotFoundResponse(renderedUrl, {
+        credentials: 'same-origin',
+      }))
+    initialOutputExportFallbackBasePath =
+      getConfiguredOutputExportNotFoundCandidate(renderedUrl.pathname)
 
-    const processedResponse = Promise.resolve(response)
-      .then(processFetch)
-      .then(({ response: processed }) => processed)
-
-    const fallbackInitialRSCPayload = await createFromFetch<InitialRSCPayload>(
-      processedResponse,
-      {
-        callServer,
-        findSourceMapURL,
-        debugChannel,
-        unstable_allowPartialStream: true,
-      }
-    )
-
-    return createInitialRSCPayloadFromFallbackPrerender(
-      await processedResponse,
-      fallbackInitialRSCPayload,
+    // Let rewritten-path/query headers on the fetched fallback response win
+    // over the current document URL when the host remaps the request.
+    return decodeFallbackPrerenderPayload(
+      Promise.resolve(response),
       renderedUrl
     )
   })()
@@ -346,24 +327,11 @@ if (instantTestStaticFetch) {
   const clientResumeFetch: Promise<Response> =
     // @ts-expect-error
     window.__NEXT_CLIENT_RESUME
-  const processedClientResumeFetch = Promise.resolve(clientResumeFetch)
-    .then(processFetch)
-    .then(({ response }) => response)
   const exportOriginalUrl = outputExportResumeUrl
   delete window.__NEXT_EXPORT_ORIGINAL_URL
-  initialServerResponse = Promise.resolve(
-    createFromFetch<InitialRSCPayload>(processedClientResumeFetch, {
-      callServer,
-      findSourceMapURL,
-      debugChannel,
-      unstable_allowPartialStream: true,
-    })
-  ).then(async (fallbackInitialRSCPayload) =>
-    createInitialRSCPayloadFromFallbackPrerender(
-      await processedClientResumeFetch,
-      fallbackInitialRSCPayload,
-      exportOriginalUrl
-    )
+  initialServerResponse = decodeFallbackPrerenderPayload(
+    clientResumeFetch,
+    exportOriginalUrl
   )
 } else {
   initialServerResponse = createFromReadableStream<InitialRSCPayload>(
@@ -487,6 +455,7 @@ export async function hydrate(
       initialRSCPayload,
       initialFlightStreamForCache,
       location: window.location,
+      outputExportFallbackBasePath: initialOutputExportFallbackBasePath,
     }),
     instrumentationHooks
   )
