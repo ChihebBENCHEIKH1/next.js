@@ -245,10 +245,7 @@ impl Storage {
                 drop(shard_guard);
             }
 
-            // Early return for shards with no entries at all
-            if modified.is_empty() {
-                return None;
-            }
+            debug_assert!(!modified.is_empty());
 
             Some(SnapshotShard {
                 shard_idx,
@@ -592,27 +589,16 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(task_id) = self.shard.modified.pop() {
             let mut inner = self.shard.storage.map.get_mut(&task_id).unwrap();
-            // Check whether any category was re-modified during snapshot mode.
-            // If so, the snapshots map may hold a pre-modification copy for the
-            // category(s) that were already modified (the `(true, true)` branch in
-            // track_modification_internal). We must serialize that copy, not the
-            // live data, so we persist the state that was current when the snapshot
-            // started. Categories modified during snapshot for the first time
-            // (`(true, false)` branch) produce a `None` entry — in that case the
-            // live data for those categories is still the pre-snapshot state, so
-            // encoding from `&inner` is correct.
-            //
-            // We remove the entry here so end_snapshot doesn't double-promote it;
-            // instead we promote manually below.
+            // If the task was re-modified during snapshot, the snapshots map may
+            // hold a pre-modification copy we must serialize instead of the live
+            // data. Remove the entry so end_snapshot doesn't double-promote it;
+            // we promote manually below.
             let item = if inner.flags.any_modified_during_snapshot() {
                 match self.shard.storage.snapshots.remove(&task_id) {
                     Some((_, Some(snapshot))) => {
-                        // `(true, true)` case: serialize the pre-snapshot copy.
                         (self.shard.process)(task_id, &snapshot, &mut self.buffer)
                     }
                     Some((_, None)) | None => {
-                        // `(true, false)` case or no entry: live data is the pre-snapshot
-                        // state for these categories; serialize directly.
                         (self.shard.process)(task_id, &inner, &mut self.buffer)
                     }
                 }
