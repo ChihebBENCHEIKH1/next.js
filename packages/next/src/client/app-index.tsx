@@ -25,10 +25,15 @@ import { createInitialRouterState } from './components/router-reducer/create-ini
 import { processFetch } from './components/router-reducer/fetch-server-response'
 import { MissingSlotContext } from '../shared/lib/app-router-context.shared-runtime'
 import type { StaticIndicatorState } from './dev/hot-reloader/app/hot-reloader-app'
-import { createInitialRSCPayloadFromFallbackPrerender } from './flight-data-helpers'
+import {
+  createInitialRSCPayloadFromFallbackPrerender,
+  doesFilledFallbackFlightDataMatchRenderedPathname,
+} from './flight-data-helpers'
 import { getDeploymentId } from '../shared/lib/deployment-id'
 import { setNavigationBuildId } from './navigation-build-id'
 import {
+  addOutputExportDataSuffix,
+  getCachedOutputExportFallbackBasePath,
   getConfiguredOutputExportNotFoundCandidate,
   fetchOutputExportFallbackResponse,
   fetchOutputExportNotFoundDataResponse,
@@ -296,11 +301,21 @@ if (instantTestStaticFetch) {
     )
 
     if (fallbackResult !== null) {
-      initialOutputExportFallbackBasePath = fallbackResult.fallbackUrl.pathname
-      return decodeFallbackPrerenderPayload(
+      const fallbackPayload = await decodeFallbackPrerenderPayload(
         Promise.resolve(fallbackResult.response),
         renderedUrl
       )
+
+      if (
+        doesFilledFallbackFlightDataMatchRenderedPathname(
+          fallbackPayload.f,
+          renderedUrl.pathname
+        )
+      ) {
+        initialOutputExportFallbackBasePath =
+          fallbackResult.fallbackUrl.pathname
+        return fallbackPayload
+      }
     }
 
     const response =
@@ -311,7 +326,9 @@ if (instantTestStaticFetch) {
         credentials: 'same-origin',
       }))
     initialOutputExportFallbackBasePath =
-      getConfiguredOutputExportNotFoundCandidate(renderedUrl.pathname)
+      getCachedOutputExportFallbackBasePath(
+        addOutputExportDataSuffix(renderedUrl)
+      ) ?? getConfiguredOutputExportNotFoundCandidate(renderedUrl.pathname)
 
     // Let rewritten-path/query headers on the fetched fallback response win
     // over the current document URL when the host remaps the request.

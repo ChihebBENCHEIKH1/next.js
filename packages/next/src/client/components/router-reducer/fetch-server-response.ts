@@ -31,6 +31,7 @@ import {
 import { callServer } from '../../app-call-server'
 import { findSourceMapURL } from '../../app-find-source-map-url'
 import {
+  doesFilledFallbackFlightDataMatchRenderedPathname,
   fillInFallbackFlightData,
   normalizeFlightData,
   prepareFlightRouterStateForRequest,
@@ -39,7 +40,11 @@ import {
 import { setCacheBustingSearchParam } from './set-cache-busting-search-param'
 import { urlToUrlWithoutFlightMarker } from '../../route-params'
 import {
+  fetchOutputExportNotFoundDataResponse,
+  fetchOutputExportNotFoundResponse,
   fetchOutputExportFallbackResponse,
+  getCachedOutputExportFallbackBasePath,
+  getConfiguredOutputExportNotFoundCandidate,
   getCachedOutputExportFallbackRequestUrl,
 } from '../../output-export-fallback'
 import type { NormalizedSearch } from '../segment-cache/cache-key'
@@ -186,8 +191,12 @@ export async function fetchServerResponse(
           url.pathname += '.txt'
         }
 
-        if (getCachedOutputExportFallbackRequestUrl(url) !== null) {
+        const cachedFallbackRequestUrl =
+          getCachedOutputExportFallbackRequestUrl(url)
+        if (cachedFallbackRequestUrl !== null) {
           usedCachedOutputExportFallback = true
+          outputExportFallbackBasePath =
+            getCachedOutputExportFallbackBasePath(url)
         }
       }
     }
@@ -313,10 +322,80 @@ export async function fetchServerResponse(
         )
     }
 
-    const [flightResponse, cacheData] = await Promise.all([
+    let [flightResponse, cacheData] = await Promise.all([
       flightResponsePromise,
       res.cacheData,
     ])
+
+    let fallbackFlightData: typeof flightResponse.f | null = null
+    if (usedOutputExportFallback || usedCachedOutputExportFallback) {
+      fallbackFlightData = fillInFallbackFlightData(
+        flightResponse.f,
+        originalUrl.pathname,
+        originalUrl.search as NormalizedSearch
+      )
+    }
+
+    if (
+      usedOutputExportFallback &&
+      fallbackFlightData !== null &&
+      !doesFilledFallbackFlightDataMatchRenderedPathname(
+        fallbackFlightData,
+        originalUrl.pathname
+      )
+    ) {
+      const notFoundResponse =
+        (await fetchOutputExportNotFoundDataResponse(originalUrl, {
+          credentials: 'same-origin',
+          headers,
+        })) ??
+        (await fetchOutputExportNotFoundResponse(originalUrl, {
+          credentials: 'same-origin',
+          headers,
+        }))
+
+      const { response: processed, cacheData: processedCacheData } =
+        await processFetch(notFoundResponse)
+
+      res = {
+        ok: processed.ok,
+        redirected: false,
+        headers: processed.headers,
+        body: processed.body,
+        status: processed.status,
+        url: originalUrl.href,
+        flightResponsePromise: null,
+        cacheData: Promise.resolve(processedCacheData),
+      }
+      responseUrl = originalUrl
+      canonicalUrl = originalUrl
+      contentType = res.headers.get('content-type') || ''
+      interception = !!res.headers.get('vary')?.includes(NEXT_URL)
+      postponed = true
+      isFlightResponse = true
+
+      flightResponsePromise =
+        createFromNextReadableStream<NavigationFlightResponse>(
+          res.body!,
+          headers,
+          { allowPartialStream: true }
+        )
+      ;[flightResponse, cacheData] = await Promise.all([
+        flightResponsePromise,
+        res.cacheData,
+      ])
+
+      fallbackFlightData = fillInFallbackFlightData(
+        flightResponse.f,
+        originalUrl.pathname,
+        originalUrl.search as NormalizedSearch
+      )
+      outputExportFallbackBasePath =
+        getCachedOutputExportFallbackBasePath(url) ??
+        getConfiguredOutputExportNotFoundCandidate(originalUrl.pathname)
+      usedOutputExportFallback = false
+      usedCachedOutputExportFallback = true
+    }
 
     if (
       (res.headers.get(NEXT_NAV_DEPLOYMENT_ID_HEADER) ?? flightResponse.b) !==
@@ -327,13 +406,7 @@ export async function fetchServerResponse(
     }
 
     const normalizedFlightData = normalizeFlightData(
-      usedOutputExportFallback || usedCachedOutputExportFallback
-        ? fillInFallbackFlightData(
-            flightResponse.f,
-            originalUrl.pathname,
-            originalUrl.search as NormalizedSearch
-          )
-        : flightResponse.f
+      fallbackFlightData ?? flightResponse.f
     )
     if (typeof normalizedFlightData === 'string') {
       return doMpaNavigation(normalizedFlightData)

@@ -17,6 +17,17 @@ export type OutputExportFallbackManifestEntry = {
   fallbackPath: string
 }
 
+function isCatchAllLikeSegment(segment: string): boolean {
+  return (
+    segment.startsWith('[...') ||
+    segment.startsWith('[[...') ||
+    segment.startsWith('(...)[') ||
+    segment.startsWith('(.)[') ||
+    segment.startsWith('(..)[') ||
+    segment.startsWith('(..)(..)[')
+  )
+}
+
 export function getOutputExportFallbackPath(staticPrefix: string): string {
   return staticPrefix.length > 0 ? `/${staticPrefix}/__fallback` : '/__fallback'
 }
@@ -47,6 +58,23 @@ export function getOutputExportFallbackStaticPrefix(
   }
 
   return segments.slice(0, firstDynamicIndex).join('/')
+}
+
+export function needsOutputExportFallbackManifest(routePath: string): boolean {
+  const segments = routePath.split('/').filter(Boolean)
+  const firstDynamicIndex = segments.findIndex(
+    (segment) => segment.startsWith('[') && segment.endsWith(']')
+  )
+
+  if (firstDynamicIndex === -1) {
+    return false
+  }
+
+  if (segments.length - firstDynamicIndex <= 1) {
+    return false
+  }
+
+  return !isCatchAllLikeSegment(segments[firstDynamicIndex])
 }
 
 export function getOutputExportFallbackConflicts(
