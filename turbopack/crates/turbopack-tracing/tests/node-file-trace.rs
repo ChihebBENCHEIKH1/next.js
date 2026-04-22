@@ -346,7 +346,7 @@ fn bench_against_node_nft_inner(input: CaseInput) {
     });
 }
 
-#[turbo_tasks::value(serialization = "none")]
+#[turbo_tasks::value(serialization = "skip", evict = "never")]
 struct NodeFileTraceResult {
     rebased: ResolvedVc<RebasedAsset>,
     effects: Effects,
@@ -360,12 +360,12 @@ async fn node_file_trace_operation(
 ) -> Result<Vc<NodeFileTraceResult>> {
     let workspace_fs: Vc<Box<dyn FileSystem>> = Vc::upcast(DiskFileSystem::new(
         rcstr!("workspace"),
-        package_root.clone(),
+        Vc::cell(package_root.clone()),
     ));
     let input_dir = workspace_fs.root().owned().await?;
     let input = input_dir.join(&format!("tests/{input}"))?;
 
-    let output_fs = DiskFileSystem::new(rcstr!("output"), directory.clone());
+    let output_fs = DiskFileSystem::new(rcstr!("output"), Vc::cell(directory.clone()));
     let output_dir = output_fs.root().owned().await?;
 
     let source = FileSource::new(input);
