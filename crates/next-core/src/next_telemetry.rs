@@ -1,46 +1,49 @@
+use phf::phf_map;
 use turbo_rcstr::RcStr;
-use turbo_tasks::Vc;
-use turbopack_core::diagnostics::{Diagnostic, PlainBuildFeatureUsage};
 
-/// Telemetry diagnostic reporting usage of a Next.js feature.
+/// Summary of Next.js feature usage for a project, reported as telemetry.
 ///
-/// Emissions are aggregated by `feature_name` in
-/// `crates/next-napi-bindings/src/next_api/utils.rs::get_diagnostics` before
-/// crossing the NAPI boundary, so each feature produces exactly one
-/// telemetry record per build — matching webpack's `TelemetryPlugin` shape.
+/// Produced by `next_api::project::Project::project_feature_usage`. Entries cover:
+/// - Boolean build/config flags (`1` if enabled, `0` if disabled), mirroring webpack's
+///   `TelemetryPlugin`.
+/// - Module imports (e.g. `next/image`, `next/font/google`): one count per unique importing module,
+///   computed by walking the whole-app module graph.
 ///
-/// Counts:
-/// - Boolean config flags: `1` if enabled, `0` if disabled.
-/// - Module imports (e.g. `next/image`): one emission per resolve of the feature module; the
-///   aggregation step sums them.
+/// The vector is sorted by `feature_name` for determinism.
 #[turbo_tasks::value(shared)]
-pub struct FeatureUsageTelemetry {
-    pub feature_name: RcStr,
-    pub invocation_count: u32,
+pub struct ProjectFeatureUsageSummary {
+    pub features: Vec<(RcStr, u32)>,
 }
 
-impl FeatureUsageTelemetry {
-    pub fn new(feature_name: RcStr, invocation_count: u32) -> Self {
-        FeatureUsageTelemetry {
-            feature_name,
-            invocation_count,
-        }
-    }
+/// Public feature specifier -> path suffix that identifies the resolved feature module.
+///
+/// Matched via `module.ident().path.path.ends_with(suffix)`. Mirrors the webpack
+/// `FEATURE_MODULE_MAP` in
+/// `packages/next/src/build/webpack/plugins/telemetry-plugin/telemetry-plugin.ts`.
+pub static FEATURE_MODULE_PATH_SUFFIXES: phf::Map<&'static str, &'static str> = phf_map! {
+    "next/image"        => "next/dist/shared/lib/image-external.js",
+    "next/future/image" => "next/dist/client/future/image.js",
+    "next/legacy/image" => "next/dist/client/legacy/image.js",
+    "next/script"       => "next/dist/client/script.js",
+    "next/dynamic"      => "next/dist/shared/lib/dynamic.js",
+};
 
-    pub fn from_bool(feature_name: RcStr, enabled: bool) -> Self {
-        FeatureUsageTelemetry::new(feature_name, if enabled { 1 } else { 0 })
-    }
-}
-
-#[turbo_tasks::value_impl]
-impl Diagnostic for FeatureUsageTelemetry {
-    #[turbo_tasks::function]
-    async fn into_plain(self: Vc<Self>) -> anyhow::Result<Vc<PlainBuildFeatureUsage>> {
-        let this = self.await?;
-        Ok(PlainBuildFeatureUsage {
-            feature_name: this.feature_name.clone(),
-            invocation_count: this.invocation_count,
-        }
-        .cell())
-    }
-}
+/// Public feature specifier -> substring that identifies the synthetic `target.css` virtual
+/// module produced by the Next.js font loader transform.
+///
+/// The SWC transform in `crates/next-custom-transforms/src/transforms/fonts` rewrites
+/// `import { Inter } from 'next/font/google'` into
+/// `import inter from 'next/font/google/target.css?{...}'`, so the original `next/font/google`
+/// specifier never appears in the module graph — we match on the synthesized virtual module
+/// instead.
+///
+/// Note: webpack's equivalent uses regex + overwrite-on-match so the count collapses to roughly
+/// 1-per-file. Our graph-walk sums unique `(parent, node)` pairs across all matching virtual
+/// modules for a given feature, producing a truer "uses of this feature" count; the number may
+/// differ slightly from webpack's for projects with many font calls per file.
+pub static FEATURE_MODULE_IDENT_SUBSTRINGS: phf::Map<&'static str, &'static str> = phf_map! {
+    "next/font/google"  => "/next/font/google/target.css",
+    "next/font/local"   => "/next/font/local/target.css",
+    "@next/font/google" => "/@next/font/google/target.css",
+    "@next/font/local"  => "/@next/font/local/target.css",
+};

@@ -174,7 +174,6 @@ export interface BuildFeatureUsage {
 
 export type TurbopackResult<T = {}> = T & {
   issues: Issue[]
-  diagnostics: BuildFeatureUsage[]
 }
 
 export interface Middleware {
@@ -303,6 +302,13 @@ export interface Project {
   writeAllEntrypointsToDisk(
     appDirOnly: boolean
   ): Promise<TurbopackResult<Partial<RawEntrypoints>>>
+
+  /**
+   * Returns the build-feature-usage telemetry summary — `(featureName,
+   * invocationCount)` pairs reported to the Next.js telemetry service. Call once
+   * at the end of a build, after `writeAllEntrypointsToDisk`.
+   */
+  featureUsage(): Promise<BuildFeatureUsage[]>
 
   entrypointsSubscribe(): AsyncIterableIterator<
     TurbopackResult<RawEntrypoints | {}>

@@ -177,9 +177,9 @@ export async function turbopackBuild(telemetry: Telemetry): Promise<{
     printBuildErrors(entrypoints, dev)
 
     try {
-      const events = eventBuildFeatureUsageFromTurbopackDiagnostics(
-        entrypoints.diagnostics
-      )
+      const featureUsage = await project.featureUsage()
+      const events =
+        eventBuildFeatureUsageFromTurbopackDiagnostics(featureUsage)
       if (events.length > 0) {
         telemetry.record(events)
       }

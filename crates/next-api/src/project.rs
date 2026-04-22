@@ -24,7 +24,9 @@ use next_core::{
         get_server_chunking_context_with_client_assets, get_server_compile_time_info,
         get_server_module_options_context, get_server_resolve_options_context,
     },
-    next_telemetry::FeatureUsageTelemetry,
+    next_telemetry::{
+        FEATURE_MODULE_IDENT_SUBSTRINGS, FEATURE_MODULE_PATH_SUFFIXES, ProjectFeatureUsageSummary,
+    },
     parse_segment_config_from_source,
     segment_config::ParseSegmentMode,
     util::{NextRuntime, OptionEnvMap},
@@ -56,7 +58,6 @@ use turbopack_core::{
     },
     compile_time_info::CompileTimeInfo,
     context::AssetContext,
-    diagnostics::DiagnosticExt,
     environment::NodeJsVersion,
     file_source::FileSource,
     ident::Layer,
@@ -1682,82 +1683,137 @@ impl Project {
         }
     }
 
-    /// Emit a telemetry event corresponding to [webpack configuration telemetry](https://github.com/vercel/next.js/blob/9da305fe320b89ee2f8c3cfb7ecbf48856368913/packages/next/src/build/webpack-config.ts#L2516)
-    /// to detect which feature is enabled.
+    /// Computes the project's feature-usage telemetry summary.
+    ///
+    /// Includes:
+    /// - The SWC target triple (`swc/target/...`, always on).
+    /// - Boolean config and compiler-option flags, mirroring the webpack [`TelemetryPlugin`](https://github.com/vercel/next.js/blob/9da305fe320b89ee2f8c3cfb7ecbf48856368913/packages/next/src/build/webpack-config.ts#L2516)
+    ///   shape.
+    /// - Per-feature-module import counts (e.g. `next/image`, `next/font/google`) computed by
+    ///   walking the whole-app module graph once and counting **unique importing modules** per
+    ///   feature. This replaces an earlier `before_resolve` plugin that emitted telemetry per
+    ///   resolve; because Turbopack caches resolves, the earlier approach under-counted to at most
+    ///   one per feature.
+    ///
+    /// The returned summary is sorted by feature name for determinism.
     #[turbo_tasks::function]
-    async fn collect_project_feature_telemetry(self: Vc<Self>) -> Result<()> {
-        let emit_event = |feature_name: RcStr, enabled: bool| {
-            FeatureUsageTelemetry::from_bool(feature_name, enabled)
-                .resolved_cell()
-                .emit();
+    pub async fn project_feature_usage(
+        self: ResolvedVc<Self>,
+    ) -> Result<Vc<ProjectFeatureUsageSummary>> {
+        let mut features: Vec<(RcStr, u32)> = Vec::new();
+        let mut push_flag = |feature_name: RcStr, enabled: bool| {
+            features.push((feature_name, if enabled { 1 } else { 0 }));
         };
 
-        // First, emit an event for the binary target triple. Prefixed with
-        // `swc/target/` so the name matches the webpack side's
+        // SWC target triple is prefixed with `swc/target/` to match the webpack
         // `swc/target/${SWC_TARGET_TRIPLE}` variant in `EventBuildFeatureUsage`.
-        emit_event(
+        push_flag(
             format!("swc/target/{}", env!("VERGEN_CARGO_TARGET_TRIPLE")).into(),
             true,
         );
 
-        // Go over config and report enabled features.
-        // [TODO]: useSwcLoader is not being reported as it is not directly corresponds (it checks babel config existence)
-        // need to confirm what we'll do with turbopack.
+        // TODO: useSwcLoader is not being reported as it is not directly corresponds (it checks
+        // babel config existence) — need to confirm what we'll do with turbopack.
         let config = self.next_config();
-
-        emit_event(
+        push_flag(
             rcstr!("skipProxyUrlNormalize"),
             *config.skip_proxy_url_normalize().await?,
         );
-
-        emit_event(
+        push_flag(
             rcstr!("skipTrailingSlashRedirect"),
             *config.skip_trailing_slash_redirect().await?,
         );
-
-        emit_event(
+        push_flag(
             rcstr!("modularizeImports"),
             !config.modularize_imports().await?.is_empty(),
         );
-        emit_event(
+        push_flag(
             rcstr!("transpilePackages"),
             !config.transpile_packages().await?.is_empty(),
         );
 
-        // compiler options
         let compiler_options = config.compiler().await?;
-        let swc_relay_enabled = compiler_options.relay.is_some();
-        let styled_components_enabled = compiler_options
-            .styled_components
-            .as_ref()
-            .map(|sc| sc.is_enabled())
-            .unwrap_or_default();
-        let react_remove_properties_enabled = compiler_options
-            .react_remove_properties
-            .as_ref()
-            .map(|rc| rc.is_enabled())
-            .unwrap_or_default();
-        let remove_console_enabled = compiler_options
-            .remove_console
-            .as_ref()
-            .map(|rc| rc.is_enabled())
-            .unwrap_or_default();
-        let emotion_enabled = compiler_options
-            .emotion
-            .as_ref()
-            .map(|e| e.is_enabled())
-            .unwrap_or_default();
-
-        emit_event(rcstr!("swcRelay"), swc_relay_enabled);
-        emit_event(rcstr!("swcStyledComponents"), styled_components_enabled);
-        emit_event(
-            rcstr!("swcReactRemoveProperties"),
-            react_remove_properties_enabled,
+        push_flag(rcstr!("swcRelay"), compiler_options.relay.is_some());
+        push_flag(
+            rcstr!("swcStyledComponents"),
+            compiler_options
+                .styled_components
+                .as_ref()
+                .is_some_and(|sc| sc.is_enabled()),
         );
-        emit_event(rcstr!("swcRemoveConsole"), remove_console_enabled);
-        emit_event(rcstr!("swcEmotion"), emotion_enabled);
+        push_flag(
+            rcstr!("swcReactRemoveProperties"),
+            compiler_options
+                .react_remove_properties
+                .as_ref()
+                .is_some_and(|rc| rc.is_enabled()),
+        );
+        push_flag(
+            rcstr!("swcRemoveConsole"),
+            compiler_options
+                .remove_console
+                .as_ref()
+                .is_some_and(|rc| rc.is_enabled()),
+        );
+        push_flag(
+            rcstr!("swcEmotion"),
+            compiler_options
+                .emotion
+                .as_ref()
+                .is_some_and(|e| e.is_enabled()),
+        );
 
-        Ok(())
+        // Module-usage counts: walk the whole-app module graph once, classify each target
+        // node against the feature-module tables, and count unique importing modules.
+        let module_graph = self.whole_app_module_graphs().await?.full.await?;
+
+        let mut importers: FxHashMap<&'static str, FxHashSet<ResolvedVc<Box<dyn Module>>>> =
+            FxHashMap::default();
+        let mut node_feature: FxHashMap<ResolvedVc<Box<dyn Module>>, Option<&'static str>> =
+            FxHashMap::default();
+        let mut edges: Vec<(ResolvedVc<Box<dyn Module>>, ResolvedVc<Box<dyn Module>>)> = Vec::new();
+        module_graph.traverse_edges_unordered(|parent, node| {
+            if let Some((parent_node, _reference)) = parent {
+                edges.push((parent_node, node));
+            }
+            Ok(())
+        })?;
+
+        for (parent_node, node) in edges {
+            let feature = match node_feature.get(&node) {
+                Some(f) => *f,
+                None => {
+                    let ident = node.ident().await?;
+                    let path = &ident.path.path;
+                    let mut matched: Option<&'static str> = None;
+                    for (feature, suffix) in FEATURE_MODULE_PATH_SUFFIXES.entries() {
+                        if path.ends_with(*suffix) {
+                            matched = Some(*feature);
+                            break;
+                        }
+                    }
+                    if matched.is_none() {
+                        for (feature, substring) in FEATURE_MODULE_IDENT_SUBSTRINGS.entries() {
+                            if path.contains(*substring) {
+                                matched = Some(*feature);
+                                break;
+                            }
+                        }
+                    }
+                    node_feature.insert(node, matched);
+                    matched
+                }
+            };
+            if let Some(feature) = feature {
+                importers.entry(feature).or_default().insert(parent_node);
+            }
+        }
+        for (feature, parents) in importers {
+            features.push((RcStr::from(feature), parents.len() as u32));
+        }
+
+        features.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(ProjectFeatureUsageSummary { features }.cell())
     }
 
     /// Scans the app/pages directories for entry points files (matching the
@@ -1772,8 +1828,6 @@ impl Project {
         self: Vc<Self>,
         app_route_filter: Option<Vec<RcStr>>,
     ) -> Result<Vc<Entrypoints>> {
-        self.collect_project_feature_telemetry().await?;
-
         let this = self.await?;
         let mut routes = FxIndexMap::default();
         let app_project = self.app_project();

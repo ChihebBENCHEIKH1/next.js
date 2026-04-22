@@ -4864,6 +4864,7 @@ dependencies = [
  "next-taskless",
  "once_cell",
  "percent-encoding",
+ "phf",
  "qstring",
  "react_remove_properties",
  "regex",
