@@ -134,7 +134,7 @@ struct EmittedEvaluatePoolAssets {
     entrypoint: FileSystemPath,
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn emit_evaluate_pool_assets_operation(
     entries: ResolvedVc<EvaluateEntries>,
     chunking_context: ResolvedVc<Box<dyn ChunkingContext>>,
@@ -178,7 +178,7 @@ async fn emit_evaluate_pool_assets_operation(
     .cell())
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn create_evaluate_pool_assets_operation(
     entries: ResolvedVc<EvaluateEntries>,
     chunking_context: ResolvedVc<Box<dyn ChunkingContext>>,
@@ -209,7 +209,7 @@ pub enum EnvVarTracking {
     Untracked,
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 /// Pass the file you cared as `runtime_entries` to invalidate and reload the
 /// evaluated result automatically.
 pub async fn get_evaluate_pool(
